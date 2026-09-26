@@ -1,0 +1,105 @@
+<!--
+  code.html —— rj/rjp、rc/rcp、sc 的共用出图模板
+
+  三种数据形态，模板按字段有无自适应：
+    · body   ：一段「已是 HTML」的输出（eval/shell 经 ansiToHtml 上色），整块塞进 <pre>
+    · lines  ：{no, html} 数组（sc 的带行号源码），逐行左侧印行号
+    · title  ：可选标题栏（shell 的仿真提示符 / sc 的文件路径）
+  body 与 lines[].html 都是可信 HTML（转义已在生成端做过），故用 {{@ }} 原样输出；
+  title 是纯文本，用 {{ }} 交给 art-template 转义。
+-->
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1e1e2e;
+      font-family: "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+    }
+    #container { width: 900px; padding: 20px; }
+    .card {
+      background: #282a36;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, .45);
+    }
+    .titlebar {
+      background: #21222c;
+      color: #b7c0d8;
+      padding: 10px 18px 12px;
+      font-size: 15px;
+      line-height: 1.5;
+      word-break: break-all;
+      white-space: pre-wrap;
+      border-bottom: 1px solid #12131a;
+    }
+    /* 三颗仿 macOS 窗口点，单独占一行放在提示符上方，纯装饰 */
+    .dots {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .dots span {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+    }
+    .dots span:nth-child(1) { background: #ff5f56; }
+    .dots span:nth-child(2) { background: #ffbd2e; }
+    .dots span:nth-child(3) { background: #27c93f; }
+    .out {
+      color: #f8f8f2;
+      font-size: 15px;
+      line-height: 1.6;
+      padding: 18px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      tab-size: 4;
+    }
+    .src { padding: 14px 0; }
+    .row { display: flex; font-size: 15px; line-height: 1.6; }
+    .row:hover { background: rgba(255, 255, 255, .04); }
+    .no {
+      flex: 0 0 auto;
+      min-width: 56px;
+      padding: 0 14px;
+      text-align: right;
+      color: #6272a4;
+      user-select: none;
+      border-right: 1px solid #12131a;
+    }
+    .lc {
+      flex: 1 1 auto;
+      padding: 0 16px;
+      color: #f8f8f2;
+      white-space: pre-wrap;
+      word-break: break-word;
+      tab-size: 4;
+    }
+    .note {
+      color: #ffb86c;
+      font-size: 14px;
+      padding: 12px 18px;
+      border-top: 1px solid #12131a;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div class="card">
+      {{if title}}<div class="titlebar"><div class="dots"><span></span><span></span><span></span></div>{{title}}</div>{{/if}}
+      {{if lines}}
+      <div class="src">
+        {{each lines}}
+        <div class="row"><span class="no">{{$value.no}}</span><span class="lc">{{@$value.html}}</span></div>
+        {{/each}}
+      </div>
+      {{if truncated}}<div class="note">……文件过长，只显示了前面若干行</div>{{/if}}
+      {{else}}
+      <pre class="out">{{@body}}</pre>
+      {{/if}}
+    </div>
+  </div>
+</body>
+</html>
