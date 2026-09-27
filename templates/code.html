@@ -1,105 +1,305 @@
 <!--
-  code.html —— rj/rjp、rc/rcp、sc 的共用出图模板
+  code.html —— rj/rjp、rc/rcp、sc 的共用出图模板（移植自 TRSS-Plugin 的「System Terminal」风格）
 
   三种数据形态，模板按字段有无自适应：
-    · body   ：一段「已是 HTML」的输出（eval/shell 经 ansiToHtml 上色），整块塞进 <pre>
+    · body   ：一段「已是 HTML」的输出（eval/shell 经 ansiToHtml 上色），整块塞进 .code-box
     · lines  ：{no, html} 数组（sc 的带行号源码），逐行左侧印行号
-    · title  ：可选标题栏（shell 的仿真提示符 / sc 的文件路径）
+    · title  ：可选标题栏（shell 的仿真提示符 / sc 的文件路径），落在窗口顶部的 code-header 里
   body 与 lines[].html 都是可信 HTML（转义已在生成端做过），故用 {{@ }} 原样输出；
-  title 是纯文本，用 {{ }} 交给 art-template 转义。
+  title / sysMem / sysCpu 是纯文本，用 {{ }} 交给 art-template 转义。
+
+  与 TRSS 原版的两点差异（都为契合本插件「零第三方依赖、离线可出图」的取向，见 src 注释）：
+    1. 背景由配置决定：默认「渐变」用纯 CSS 渐变 + 网格，不联网；选「图片 / 壁纸 API」则 bgImage 带来
+       一个链接，叠在渐变之上（取图失败仍露出渐变兜底）。见 config.ts 的 appearance.background。
+    2. 去掉了依赖网络探测的「延迟」一项，顶栏只保留内存 / CPU 两枚由内核真实填入的资源胶囊。
 -->
 <!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <style>
+    :root {
+      --gs-gold: #d3bc8e;
+      --gs-gold-light: #ece5d8;
+      /* 面板半透明度：低于 TRSS 原版的近乎不透明，让背景图（若配了壁纸）透过磨砂玻璃显出来——
+         这正是玻璃拟态的用意。代码区另有自己的深色底（--gs-bg-inner），故降这一档不伤正文可读性 */
+      --gs-bg-main: rgba(20, 24, 34, 0.72);
+      --gs-bg-inner: rgba(10, 12, 18, 0.86);
+      --gs-border: rgba(211, 188, 142, 0.35);
+      --gs-green: #32d965;
+      --gs-yellow: #fadb14;
+      --gs-red: #ff4d4f;
+    }
+
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
     body {
-      background: #1e1e2e;
-      font-family: "Cascadia Code", "JetBrains Mono", Consolas, "Courier New", monospace;
+      background: #050505;
+      font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
     }
-    #container { width: 900px; padding: 20px; }
-    .card {
-      background: #282a36;
-      border-radius: 12px;
-      overflow: hidden;
-      box-shadow: 0 8px 30px rgba(0, 0, 0, .45);
-    }
-    .titlebar {
-      background: #21222c;
-      color: #b7c0d8;
-      padding: 10px 18px 12px;
-      font-size: 15px;
-      line-height: 1.5;
-      word-break: break-all;
-      white-space: pre-wrap;
-      border-bottom: 1px solid #12131a;
-    }
-    /* 三颗仿 macOS 窗口点，单独占一行放在提示符上方，纯装饰 */
-    .dots {
+
+    /* 截图捕获的是 #container：它就是 TRSS 原版的 body 外框，留出上/左内边距给悬浮标签 */
+    #container {
+      width: 950px;
+      background: #050505;
+      padding: 60px 40px 40px;
+      position: relative;
       display: flex;
-      gap: 8px;
-      margin-bottom: 10px;
+      justify-content: center;
     }
-    .dots span {
-      width: 12px; height: 12px;
-      border-radius: 50%;
+
+    /* 背景层：默认纯 CSS 渐变 + 细网格，离线可用；配置选「图片」时由下方 bgImage 叠一张背景图，
+       仍保留渐变作兜底（取图失败也不至于纯黑）。见 config.ts 的 appearance.background */
+    .bg-layer {
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(1200px 420px at 18% -12%, rgba(211, 188, 142, .10), transparent 60%),
+        radial-gradient(900px 520px at 105% 118%, rgba(76, 197, 252, .08), transparent 55%),
+        linear-gradient(135deg, #0a0c12 0%, #141822 55%, #0a0c12 100%);
+      background-size: cover;
+      background-position: center;
+      z-index: 1;
     }
-    .dots span:nth-child(1) { background: #ff5f56; }
-    .dots span:nth-child(2) { background: #ffbd2e; }
-    .dots span:nth-child(3) { background: #27c93f; }
-    .out {
-      color: #f8f8f2;
-      font-size: 15px;
-      line-height: 1.6;
-      padding: 18px;
-      white-space: pre-wrap;
-      word-break: break-word;
+    /* 图片模式：把壁纸叠在渐变之上、略压暗，既保证面板里的文字仍清晰，又不至于把壁纸压成一团黑 */
+    .bg-layer.has-image { filter: brightness(.78) contrast(1.05); }
+
+    .system-panel {
+      position: relative; width: 100%; z-index: 10;
+      background: var(--gs-bg-main);
+      backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+      border: 1px solid var(--gs-border);
+      border-radius: 8px;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, .6), inset 0 0 0 1px rgba(255, 255, 255, .05);
+      display: flex;
+    }
+
+    .glass-fx {
+      position: absolute; inset: 0;
+      border-radius: inherit;
+      overflow: hidden; pointer-events: none; z-index: 1;
+    }
+    .glass-fx::after {
+      content: ''; position: absolute;
+      top: -50%; left: -50%; width: 200%; height: 200%;
+      background: linear-gradient(to bottom right, rgba(255, 255, 255, 0) 40%, rgba(255, 255, 255, .04) 50%, rgba(255, 255, 255, 0) 60%);
+      transform: rotate(25deg);
+    }
+
+    .floating-tag {
+      position: absolute; top: -22px; left: -15px;
+      background: #ece5d8; color: #3b4354;
+      border: 2px solid var(--gs-gold);
+      border-radius: 20px 20px 20px 4px;
+      padding: 6px 24px 6px 18px;
+      font-size: 16px; font-weight: 900; letter-spacing: 1px;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, .6);
+      display: flex; align-items: center; gap: 8px; z-index: 20;
+    }
+    .status-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--gs-green); box-shadow: 0 0 8px var(--gs-green);
+    }
+
+    .sidebar {
+      width: 65px; border-right: 1px solid rgba(255, 255, 255, .05);
+      display: flex; flex-direction: column; align-items: center;
+      padding: 30px 0; gap: 20px;
+      background: linear-gradient(to right, rgba(0, 0, 0, .3), transparent);
+      z-index: 5;
+    }
+    .nav-item {
+      width: 42px; height: 42px; border-radius: 8px;
+      display: flex; justify-content: center; align-items: center;
+      opacity: .4; color: var(--gs-gold-light);
+    }
+    .nav-item.active {
+      opacity: 1; background: rgba(211, 188, 142, .15);
+      box-shadow: 0 0 12px rgba(211, 188, 142, .2); border: 1px solid var(--gs-border);
+    }
+    .nav-item svg { width: 22px; height: 22px; }
+
+    .main-content {
+      flex: 1; min-width: 0; display: flex; flex-direction: column;
+      padding: 20px 25px 20px 20px; z-index: 5;
+    }
+
+    .top-status-bar {
+      display: flex; justify-content: flex-end; align-items: center;
+      margin-bottom: 15px; gap: 15px;
+    }
+    .resource-pill {
+      background: rgba(0, 0, 0, .6); border-radius: 20px;
+      padding: 4px 12px 4px 6px; display: flex; align-items: center; gap: 8px;
+      border: 1px solid rgba(255, 255, 255, .08);
+      box-shadow: inset 0 2px 5px rgba(0, 0, 0, .5);
+    }
+    .resource-icon {
+      width: 20px; height: 20px; background: var(--gs-gold); border-radius: 50%;
+      display: flex; justify-content: center; align-items: center;
+      color: #1c212e; font-size: 12px; font-weight: 900;
+    }
+    .resource-text { color: var(--gs-gold-light); font-size: 13px; font-family: monospace; }
+
+    .code-container {
+      flex: 1; min-width: 0;
+      background-color: var(--gs-bg-inner);
+      background-image:
+        linear-gradient(rgba(255, 255, 255, .03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, .03) 1px, transparent 1px);
+      background-size: 20px 20px;
+      border-radius: 6px;
+      border: 1px solid rgba(0, 0, 0, .8);
+      box-shadow: inset 0 10px 30px rgba(0, 0, 0, .8);
+      display: flex; flex-direction: column;
+      overflow: hidden;
+    }
+
+    .code-header {
+      background: rgba(0, 0, 0, .7); padding: 8px 15px;
+      font-size: 12px; color: #8995a5; font-family: monospace;
+      border-bottom: 1px solid rgba(255, 255, 255, .03);
+      display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+    }
+    /* 标题可能是很长的文件路径 / 多段提示符，允许折行，别把右侧时钟挤出去 */
+    .hdr-title { min-width: 0; word-break: break-all; white-space: pre-wrap; }
+    .hdr-time { flex: 0 0 auto; }
+
+    /* min-width:0 + anywhere：命令输出里的超长串（base64、XML）要能在框内换行，
+       否则会把面板撑宽，截图右侧被裁掉 */
+    .code-box {
+      padding: 15px; min-width: 0;
+      font-family: 'Consolas', 'Fira Code', monospace;
+      font-size: 14px; line-height: 1.6; color: var(--gs-gold-light);
+      white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
       tab-size: 4;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 1);
     }
-    .src { padding: 14px 0; }
-    .row { display: flex; font-size: 15px; line-height: 1.6; }
+
+    /* sc 的带行号视图：不能给容器上 pre-wrap，否则模板里各 row 之间的换行会渲成空行 */
+    .src {
+      padding: 12px 0; min-width: 0;
+      font-family: 'Consolas', 'Fira Code', monospace;
+      font-size: 14px; line-height: 1.6; color: var(--gs-gold-light);
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 1);
+    }
+    .row { display: flex; }
     .row:hover { background: rgba(255, 255, 255, .04); }
     .no {
-      flex: 0 0 auto;
-      min-width: 56px;
-      padding: 0 14px;
-      text-align: right;
-      color: #6272a4;
+      flex: 0 0 auto; min-width: 48px;
+      padding: 0 14px; text-align: right;
+      color: var(--gs-gold); opacity: .55;
       user-select: none;
-      border-right: 1px solid #12131a;
+      border-right: 1px solid rgba(255, 255, 255, .08);
     }
     .lc {
-      flex: 1 1 auto;
+      flex: 1 1 auto; min-width: 0;
       padding: 0 16px;
-      color: #f8f8f2;
-      white-space: pre-wrap;
-      word-break: break-word;
+      white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
       tab-size: 4;
     }
+
     .note {
-      color: #ffb86c;
-      font-size: 14px;
-      padding: 12px 18px;
-      border-top: 1px solid #12131a;
+      color: var(--gs-yellow);
+      font-size: 13px; font-family: monospace;
+      padding: 10px 15px;
+      border-top: 1px solid rgba(255, 255, 255, .06);
     }
+
+    .panel-footer {
+      margin-top: 15px; display: flex; justify-content: space-between; align-items: center;
+      border-top: 1px solid rgba(255, 255, 255, .05); padding-top: 10px;
+    }
+    .session-trace {
+      font-family: monospace; font-size: 12px; color: rgba(211, 188, 142, .6);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .session-trace::before {
+      content: ''; display: inline-block; width: 6px; height: 6px;
+      background: var(--gs-gold); border-radius: 50%; box-shadow: 0 0 8px var(--gs-gold);
+    }
+    .watermark { font-size: 12px; color: rgba(255, 255, 255, .3); font-family: monospace; letter-spacing: 1px; }
   </style>
 </head>
 <body>
   <div id="container">
-    <div class="card">
-      {{if title}}<div class="titlebar"><div class="dots"><span></span><span></span><span></span></div>{{title}}</div>{{/if}}
-      {{if lines}}
-      <div class="src">
-        {{each lines}}
-        <div class="row"><span class="no">{{$value.no}}</span><span class="lc">{{@$value.html}}</span></div>
-        {{/each}}
+    <div class="bg-layer{{if bgImage}} has-image{{/if}}"{{if bgImage}} style="background-image: url('{{bgImage}}'), linear-gradient(135deg, #0a0c12 0%, #141822 55%, #0a0c12 100%);"{{/if}}></div>
+
+    <div class="system-panel">
+      <div class="glass-fx"></div>
+
+      <div class="floating-tag">
+        <div class="status-dot"></div>
+        SYSTEM CORE
       </div>
-      {{if truncated}}<div class="note">……文件过长，只显示了前面若干行</div>{{/if}}
-      {{else}}
-      <pre class="out">{{@body}}</pre>
-      {{/if}}
+
+      <div class="sidebar">
+        <div class="nav-item active">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+        </div>
+        <div class="nav-item">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </div>
+      </div>
+
+      <div class="main-content">
+        <div class="top-status-bar">
+          <div class="resource-pill">
+            <div class="resource-icon">M</div>
+            <div class="resource-text">{{sysMem}} GB</div>
+          </div>
+          <div class="resource-pill">
+            <div class="resource-icon" id="cpu-icon" style="background:#8eb5d3;">C</div>
+            <div class="resource-text">{{sysCpu}} %</div>
+          </div>
+        </div>
+
+        <div class="code-container">
+          <div class="code-header">
+            <span class="hdr-title">{{if title}}{{title}}{{else}}root@akasha:~# execute_command{{/if}}</span>
+            <span class="hdr-time" id="sys-time">00:00:00</span>
+          </div>
+
+          {{if lines}}
+          <div class="src">
+            {{each lines}}
+            <div class="row"><span class="no">{{$value.no}}</span><span class="lc">{{@$value.html}}</span></div>
+            {{/each}}
+          </div>
+          {{if truncated}}<div class="note">……文件过长，只显示了前面若干行</div>{{/if}}
+          {{else}}
+          <div class="code-box">{{@body}}</div>
+          {{/if}}
+        </div>
+
+        <div class="panel-footer">
+          <div class="session-trace">SESSION_TRACE: <span id="trace-id">...</span></div>
+          <div class="watermark">TermZero // AKASHA ENVIRONMENT</div>
+        </div>
+      </div>
     </div>
   </div>
+
+  <script>
+    // 时钟：出图那一刻的本地时间
+    const now = new Date();
+    const pad = n => n.toString().padStart(2, '0');
+    document.getElementById('sys-time').innerText =
+      pad(now.getHours()) + ':' + pad(now.getMinutes()) + ':' + pad(now.getSeconds());
+
+    // 随机会话号，纯装饰
+    const hex = len => [...Array(len)].map(() => Math.floor(Math.random() * 16).toString(16)).join('').toUpperCase();
+    document.getElementById('trace-id').innerText = '0x' + hex(8);
+
+    // CPU 胶囊按负载变色，数据来自内核填入的 {{sysCpu}}
+    const cpuNum = parseInt('{{sysCpu}}', 10);
+    if (!isNaN(cpuNum)) {
+      const icon = document.getElementById('cpu-icon');
+      if (cpuNum > 80) icon.style.background = 'var(--gs-red)';
+      else if (cpuNum > 50) icon.style.background = 'var(--gs-yellow)';
+    }
+  </script>
 </body>
 </html>

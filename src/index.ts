@@ -17,6 +17,7 @@
 
 import { readFile, stat } from "node:fs/promises"
 import { createRequire } from "node:module"
+import os from "node:os"
 import { isAbsolute, resolve } from "node:path"
 import process from "node:process"
 import { definePlugin, parseDuration } from "@yunzai-ng/core"
@@ -130,7 +131,7 @@ export default definePlugin({
         // 出图版开 ANSI 颜色：inspect 的着色经 ansiToHtml 上色
         const text = error === undefined ? stringify(raw, true) : stringifyError(error, true)
         const body = ansiToHtml(text || "（无输出）")
-        await replyPic(e, CODE_TEMPLATE, { body }, stripAnsi(text) || "（无输出）")
+        await replyPic(e, CODE_TEMPLATE, { body, ...(await renderChrome(ctx)) }, stripAnsi(text) || "（无输出）")
       })
 
     /* ─────────────────────────────── rc / rcp ─────────────────────────────── */
@@ -154,7 +155,7 @@ export default definePlugin({
         const parts = [ansiToHtml(result.stdout), ansiToHtml(result.stderr)].filter(s => s !== "")
         if (result.error) parts.push(ansiToHtml(String(result.error.message)))
         const body = parts.join("\n") || "（无输出）"
-        await replyPic(e, CODE_TEMPLATE, { title: promptLine(command), body }, shellPlain(result))
+        await replyPic(e, CODE_TEMPLATE, { title: promptLine(command), body, ...(await renderChrome(ctx)) }, shellPlain(result))
       })
 
     /* ─────────────────────────────── sc ─────────────────────────────── */
@@ -180,7 +181,7 @@ export default definePlugin({
         await replyPic(
           e,
           CODE_TEMPLATE,
-          { title: result.path, lines: result.lines, truncated: result.truncated },
+          { title: result.path, lines: result.lines, truncated: result.truncated, ...(await renderChrome(ctx)) },
           truncate(fallback, ctx.config.get().output.maxTextLength)
         )
       })
@@ -205,6 +206,108 @@ export default definePlugin({
       })
   }
 })
+
+/**
+ * 攒齐出图模板（code.html）顶栏与背景所需的「外壳」字段
+ *
+ * 与命令的实际内容（body / lines / title）无关，三条出图命令都要这一份，故抽出来免得各写各的。
+ * @param ctx 插件上下文
+ * @returns 模板字段：sysMem / sysCpu（资源胶囊）、bgImage（背景图链接，空串表示走离线渐变）
+ */
+async function renderChrome(
+  ctx: PluginContext<TermZeroConfig>
+): Promise<{ sysMem: string; sysCpu: string; bgImage: string }> {
+  const { appearance } = ctx.config.get()
+  const bgImage =
+    appearance.background === "image" ? await fetchBackground(ctx, appearance.backgroundUrl.trim()) : ""
+  return { ...(await systemStats()), bgImage }
+}
+
+/**
+ * 把背景图下载下来、转成 data URI —— 关键在于**不能让渲染期再去联网取图**
+ *
+ * 渲染器按 `networkidle2`（在途连接 ≤2 持续 500ms 即判定空闲）时机截图，而一张背景图的下载只占 1 条连接，
+ * 恰好落在这个阈值内：于是 puppeteer 会在图还没下载完时就判定「空闲」并截图，图片随后才到 —— 表现就是
+ * 「配置、模板、网络都对，可出来的图上没有任何背景」。把图在 Node 侧取好、内联进 HTML，渲染期就没有网络
+ * 请求，截图那一刻背景已在 DOM 里。这也与 `md` 命令「Node 侧用 ctx.http 取远程内容」的做法一致。
+ *
+ * 取图是「图片」模式下的可选增强，任何一步失败都回退空串 → 模板走离线渐变，绝不因背景图让出图失败。
+ * @param ctx 插件上下文
+ * @param url 背景图链接（已 trim）
+ * @returns `data:<mime>;base64,...`，失败或链接为空时返回空串
+ */
+async function fetchBackground(ctx: PluginContext<TermZeroConfig>, url: string): Promise<string> {
+  if (url === "") return ""
+  try {
+    const buf = await ctx.http.get<Buffer>(url, { responseType: "buffer", timeout: 10_000 })
+    const mime = sniffImageMime(buf)
+    if (mime === undefined) {
+      ctx.logger.warn(`背景图不是可识别的图片格式，回退渐变：${url}`)
+      return ""
+    }
+    return `data:${mime};base64,${buf.toString("base64")}`
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    ctx.logger.warn(`背景图下载失败，回退渐变：${reason}`)
+    return ""
+  }
+}
+
+/**
+ * 按魔数嗅探图片 MIME —— data URI 必须带正确的类型，而壁纸 API 的链接（如 `.../mp`）往往没有扩展名
+ *
+ * 只认几种网页背景常见格式；认不出就当作「不是图片」交由调用方回退。纯字节判断，不联网、不依赖响应头。
+ * @param buf 图片字节
+ * @returns MIME 字符串，认不出时 undefined
+ */
+function sniffImageMime(buf: Buffer): string | undefined {
+  if (buf.length < 12) return undefined
+  // JPEG: FF D8 FF
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg"
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "image/png"
+  // GIF: "GIF8"
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return "image/gif"
+  // RIFF....WEBP（WebP）/ ftyp....(avif)（AVIF）：都要看第 8 字节起的品牌
+  const brand = buf.toString("ascii", 8, 12)
+  if (buf.toString("ascii", 0, 4) === "RIFF" && brand === "WEBP") return "image/webp"
+  if (buf.toString("ascii", 4, 8) === "ftyp" && (brand === "avif" || brand === "avis")) return "image/avif"
+  return undefined
+}
+
+/**
+ * 采一次系统资源，填给出图模板顶栏的两枚资源胶囊
+ *
+ * CPU 占用无法从单帧算出（`os.cpus()` 给的是自开机以来的累计时间片），故取 ~100ms 的窗口两次采样求差；
+ * 这点开销相对一次 puppeteer 出图可忽略。内存给「已用 GB」，与模板里 `{{sysMem}} GB` 对齐。
+ * 纯装饰用途，取不到就退化成看得过去的占位值，绝不因此让出图失败。
+ * @returns 模板字段：sysMem（已用内存 GB，一位小数）、sysCpu（CPU 占用百分比，整数）
+ */
+async function systemStats(): Promise<{ sysMem: string; sysCpu: string }> {
+  try {
+    const usedGb = (os.totalmem() - os.freemem()) / 1024 ** 3
+    const a = cpuTotals()
+    await new Promise(resolve => setTimeout(resolve, 100))
+    const b = cpuTotals()
+    const idle = b.idle - a.idle
+    const total = b.total - a.total
+    const usage = total > 0 ? (1 - idle / total) * 100 : 0
+    return { sysMem: usedGb.toFixed(1), sysCpu: String(Math.round(usage)) }
+  } catch {
+    return { sysMem: "--", sysCpu: "--" }
+  }
+}
+
+/** 累加所有核心的 idle 与 total 时间片，供 {@link systemStats} 求差 */
+function cpuTotals(): { idle: number; total: number } {
+  let idle = 0
+  let total = 0
+  for (const cpu of os.cpus()) {
+    for (const slice of Object.values(cpu.times)) total += slice
+    idle += cpu.times.idle
+  }
+  return { idle, total }
+}
 
 /**
  * 按当前配置跑一条 Shell 命令

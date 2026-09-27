@@ -39,6 +39,39 @@ export const CONFIG_SCHEMA = s.object({
     .group("Shell")
     .order(10),
 
+  /* ────────────────────────────── 外观 ────────────────────────────── */
+
+  appearance: s
+    .object({
+      background: s
+        .select([
+          {
+            value: "gradient",
+            label: "渐变（离线）",
+            description: "纯 CSS 深色渐变 + 网格，不联网、出图最快最稳。默认"
+          },
+          {
+            value: "image",
+            label: "图片 / 壁纸 API",
+            description: "用下方链接作背景图；取图失败会自动退回渐变，但联网取图会拖慢出图、极端情况下渲染超时会退回纯文本"
+          }
+        ])
+        .default("gradient")
+        .title("背景")
+        .desc("出图（rjp / rcp / sc）面板后面的背景。想要花哨壁纸就选「图片 / 壁纸 API」并填下面的链接"),
+      backgroundUrl: s
+        .string()
+        .default("https://t.mwm.moe/pc")
+        .title("背景图链接")
+        .desc(
+          "背景选「图片 / 壁纸 API」时使用。可填一张固定图片的直链，也可填每次返回随机图的壁纸 API" +
+            "（如默认的 https://t.mwm.moe/pc）。留空则退回渐变"
+        )
+    })
+    .title("外观")
+    .group("外观")
+    .order(15),
+
   /* ────────────────────────────── 输出 ────────────────────────────── */
 
   output: s
