@@ -1,7 +1,7 @@
 {
   "name": "@yunzai-ng/termzero",
   "version": "0.1.0",
-  "description": "远程执行：rj/rjp 跑 JS、rc/rcp 跑 Shell、sc 看源码、md 渲 Markdown —— 均限主人",
+  "description": "远程执行：rj / rjp 跑 JS，rc / rcp 跑 Shell，sc 看源码，md 渲 Markdown —— 六条命令全部仅限主人",
   "type": "module",
   "private": true,
   "license": "AGPL-3.0-or-later",
